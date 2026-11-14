@@ -1020,21 +1020,21 @@ extension JITEnableContext {
     }
 }
 // MARK: - Settings keys
- 
+
 private enum SLKey {
     static let url = "slspoof.apiURL"
     static let token = "slspoof.token"
     static let ip = "slspoof.deviceIP"
     static let pairing = "slspoof.pairingFileName"
 }
- 
+
 // MARK: - Errors and the site's reply
- 
+
 private enum SLWorkerError: LocalizedError {
     case rejected(Int)
     case badReply
     case http(Int)
- 
+
     var errorDescription: String? {
         switch self {
         case .rejected(let code):
@@ -1046,7 +1046,7 @@ private enum SLWorkerError: LocalizedError {
         }
     }
 }
- 
+
 /// {"active":true,"lat":42.357,"lon":-71.057,"poll":5,"label":"Boston"}  or  {"active":false,"poll":5}
 private struct SLReply: Decodable {
     let active: Bool
@@ -1055,13 +1055,13 @@ private struct SLReply: Decodable {
     let poll: Int?
     let label: String?
 }
- 
+
 // MARK: - The worker
- 
+
 @MainActor
 final class SLSpoofWorker: ObservableObject {
     static let shared = SLSpoofWorker()
- 
+
     @Published var apiURL: String {
         didSet { UserDefaults.standard.set(apiURL, forKey: SLKey.url) }
     }
@@ -1075,16 +1075,16 @@ final class SLSpoofWorker: ObservableObject {
     @Published var pairingFileName: String {
         didSet { UserDefaults.standard.set(pairingFileName, forKey: SLKey.pairing) }
     }
- 
+
     @Published private(set) var running = false
     @Published private(set) var status = "Stopped"
     @Published private(set) var lines: [String] = []
- 
+
     private var task: Task<Void, Never>?
     private var keepAliveRequested = false
     private var appliedLat: Double?
     private var appliedLon: Double?
- 
+
     private init() {
         let defaults = UserDefaults.standard
         apiURL = defaults.string(forKey: SLKey.url) ?? "https://sailorsloot.xyz/wp-json/loc/v1/current"
@@ -1092,35 +1092,49 @@ final class SLSpoofWorker: ObservableObject {
         deviceIP = defaults.string(forKey: SLKey.ip) ?? DeviceConnectionContext.defaultTargetIPAddress
         pairingFileName = defaults.string(forKey: SLKey.pairing) ?? ""
     }
- 
+
     // MARK: Pairing file
- 
+
     private var documentsURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
- 
+
+    /// StikDebug's own PairingFileStore saves the pairing file as rp_pairing_file.plist.
+    /// The other names are fallbacks for files placed by hand.
+    private let pairingNames = ["rp_pairing_file.plist", "rpPairingFile.plist", "pairingFile.plist"]
+
+    private var searchFolders: [URL] {
+        var folders = [documentsURL]
+        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            folders.append(support)
+        }
+        return folders
+    }
+
     /// Full path of the pairing file that will be used.
     var pairingFilePath: String {
         if !pairingFileName.isEmpty {
             return documentsURL.appendingPathComponent(pairingFileName).path
         }
-        for name in ["rpPairingFile.plist", "pairingFile.plist"] {
-            let candidate = documentsURL.appendingPathComponent(name).path
-            if FileManager.default.fileExists(atPath: candidate) {
-                return candidate
+        for folder in searchFolders {
+            for name in pairingNames {
+                let candidate = folder.appendingPathComponent(name).path
+                if FileManager.default.fileExists(atPath: candidate) {
+                    return candidate
+                }
             }
         }
-        return documentsURL.appendingPathComponent("rpPairingFile.plist").path
+        return documentsURL.appendingPathComponent(pairingNames[0]).path
     }
- 
+
     var pairingFileExists: Bool {
         FileManager.default.fileExists(atPath: pairingFilePath)
     }
- 
+
     var pairingFileDisplayName: String {
         (pairingFilePath as NSString).lastPathComponent
     }
- 
+
     func importPairingFile(from url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer {
@@ -1139,9 +1153,9 @@ final class SLSpoofWorker: ObservableObject {
             log("Could not import the pairing file: \(error.localizedDescription)")
         }
     }
- 
+
     // MARK: Start / stop
- 
+
     func start() {
         guard task == nil else { return }
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1152,19 +1166,19 @@ final class SLSpoofWorker: ObservableObject {
         running = true
         status = "Starting"
         log("Worker started.")
- 
+
         // Keep the app alive in the background using StikDebug's own keep-alive.
         UserDefaults.standard.set(true, forKey: "keepAliveLocation")
         BackgroundLocationManager.shared.configurationDidChange()
         BackgroundLocationManager.shared.requestAuthorizationIfNeeded()
         BackgroundLocationManager.shared.requestStart()
         keepAliveRequested = true
- 
+
         task = Task { [weak self] in
             await self?.loop()
         }
     }
- 
+
     func stop() {
         task?.cancel()
         status = "Stopping"
@@ -1173,7 +1187,7 @@ final class SLSpoofWorker: ObservableObject {
             self?.status = "Stopped"
         }
     }
- 
+
     private func finishLoop() {
         if keepAliveRequested {
             BackgroundLocationManager.shared.requestStop()
@@ -1182,9 +1196,9 @@ final class SLSpoofWorker: ObservableObject {
         task = nil
         running = false
     }
- 
+
     // MARK: The polling loop
- 
+
     private func loop() async {
         while !Task.isCancelled {
             var wait = 5
@@ -1192,7 +1206,7 @@ final class SLSpoofWorker: ObservableObject {
                 let reply = try await fetchCurrent()
                 wait = max(2, min(60, reply.poll ?? 5))
                 status = "Connected to site"
- 
+
                 if reply.active, let lat = reply.lat, let lon = reply.lon {
                     if appliedLat != lat || appliedLon != lon {
                         await apply(lat: lat, lon: lon, label: reply.label)
@@ -1224,7 +1238,7 @@ final class SLSpoofWorker: ObservableObject {
         }
         finishLoop()
     }
- 
+
     private func fetchCurrent() async throws -> SLReply {
         let urlText = apiURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: urlText) else {
@@ -1234,7 +1248,7 @@ final class SLSpoofWorker: ObservableObject {
         request.setValue(token.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "X-Loc-Token")
         request.setValue("SL_Spoof-iOS/1.0", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
- 
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw SLWorkerError.badReply
@@ -1251,20 +1265,20 @@ final class SLSpoofWorker: ObservableObject {
             throw SLWorkerError.badReply
         }
     }
- 
+
     // MARK: Talking to StikDebug's location engine
- 
+
     private func apply(lat: Double, lon: Double, label: String?) async {
         status = "Moving phone"
         let ip = deviceIP.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = pairingFilePath
- 
+
         let code: Int32 = await withCheckedContinuation { continuation in
             LocationSimulationCommandQueue.shared.async {
                 continuation.resume(returning: simulate_location(ip, lat, lon, path))
             }
         }
- 
+
         let coords = String(format: "%.5f, %.5f", lat, lon)
         if code == 0 {
             appliedLat = lat
@@ -1282,7 +1296,7 @@ final class SLSpoofWorker: ObservableObject {
             log(SLSpoofWorker.explain(code))
         }
     }
- 
+
     private func clearLocation() async {
         let code: Int32 = await withCheckedContinuation { continuation in
             LocationSimulationCommandQueue.shared.async {
@@ -1295,7 +1309,7 @@ final class SLSpoofWorker: ObservableObject {
         appliedLat = nil
         appliedLon = nil
     }
- 
+
     /// The numbers are StikDebug's own status codes from simulate_location.
     static func explain(_ code: Int32) -> String {
         switch code {
@@ -1317,9 +1331,9 @@ final class SLSpoofWorker: ObservableObject {
             return "Location error code \(code)."
         }
     }
- 
+
     // MARK: Log
- 
+
     private func log(_ text: String) {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
@@ -1329,16 +1343,16 @@ final class SLSpoofWorker: ObservableObject {
         }
     }
 }
- 
+
 // MARK: - Settings screen
- 
+
 @MainActor
 struct SLSpoofRemoteView: View {
     @ObservedObject private var worker = SLSpoofWorker.shared
     @State private var showImporter = false
- 
+
     private let accent = Color(red: 0.96, green: 0.51, blue: 0.13)
- 
+
     var body: some View {
         NavigationStack {
             Form {
@@ -1351,7 +1365,7 @@ struct SLSpoofRemoteView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
- 
+
                 Section(
                     header: Text("This iPhone"),
                     footer: Text("Needs LocalDevVPN connected, Developer Mode on, and the phone on Wi-Fi or in Airplane Mode.")
@@ -1373,14 +1387,14 @@ struct SLSpoofRemoteView: View {
                         showImporter = true
                     }
                 }
- 
+
                 Section(header: Text("Worker")) {
                     Button(action: toggle) {
                         Text(worker.running ? "Stop" : "Start").bold()
                     }
                     Text(worker.status)
                 }
- 
+
                 Section(header: Text("Activity")) {
                     if worker.lines.isEmpty {
                         Text("Nothing yet.").foregroundColor(.secondary)
@@ -1404,7 +1418,7 @@ struct SLSpoofRemoteView: View {
             }
         }
     }
- 
+
     private func toggle() {
         if worker.running {
             worker.stop()
@@ -1413,3 +1427,4 @@ struct SLSpoofRemoteView: View {
         }
     }
 }
+
