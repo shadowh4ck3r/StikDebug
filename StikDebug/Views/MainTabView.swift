@@ -66,6 +66,8 @@ struct MainTabView: View {
                         .tabItem { Label(feature.title, systemImage: feature.systemImage) }
                         .tag(feature.id)
                 }
+                   SLSpoofRemoteView()
+       .tabItem { Label("SL_Spoof", systemImage: "location.fill") }
             }
             .onAppear {
                 ensureSelectionIsValid()
